@@ -8,6 +8,9 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const findOrCreate = require("mongoose-findorcreate");
+const ObjectID = require("mongodb").ObjectID;
 
 const app = express();
 
@@ -33,21 +36,76 @@ app.use(passport.session());
 mongoose.connect("mongodb://0.0.0.0:27017/userDB", { useNewURLParser: true });
 
 const userSchema = new mongoose.Schema({
+  id: mongoose.Schema.Types.ObjectId,
   email: String,
   password: String,
+  googleId: String,
+  secret: String,
 });
 
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
 
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+passport.serializeUser(function (user, cb) {
+  process.nextTick(function () {
+    return cb(null, {
+      id: user.id,
+      username: user.username,
+      picture: user.picture,
+    });
+  });
+});
+
+passport.deserializeUser(function (user, cb) {
+  process.nextTick(function () {
+    return cb(null, user);
+  });
+});
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.CLIENT_ID,
+      clientSecret: process.env.CLIENT_SECRET,
+      callbackURL: "http://localhost:3000/auth/google/secrets",
+      userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
+    },
+    function (accessToken, refreshToken, profile, cb) {
+      User.findOrCreate({ googleId: profile.id }, function (err, user) {
+        return cb(err, user);
+      });
+    }
+  )
+);
 
 app.get("/", function (req, res) {
   res.render("home");
+});
+
+app.get(
+  "/auth/google",
+  passport.authenticate("google", { scope: ["profile"] })
+);
+
+app.get(
+  "/auth/google/secrets",
+  passport.authenticate("google", { failureRedirect: "/login" }),
+  function (req, res) {
+    // Successful authentication, redirect home.
+    res.redirect("/secrets");
+  }
+);
+
+app.get("/submit", function (req, res) {
+  if (req.isAuthenticated()) {
+    res.render("submit");
+  } else {
+    res.redirect("/login");
+  }
 });
 
 app.get("/login", function (req, res) {
@@ -104,8 +162,8 @@ app.get("/logout", function (req, res) {
 // });
 
 app.post("/register", function (req, res) {
-  User.register(
-    { username: req.body.username },
+  User.register(new User
+    ({ username: req.body.username }),
     req.body.password,
     function (err, user) {
       if (err) {
@@ -119,6 +177,74 @@ app.post("/register", function (req, res) {
     }
   );
 });
+
+// app.post("/submit", async function (req, res) {
+//   const submittedSecret = req.body.secret;
+  
+//   // Check if the user is authenticated
+//   if (req.isAuthenticated()) {
+//     const userId = req.user._id; // Use req.user._id to access the ObjectID
+
+//     try {
+//       // Use async/await to update the user's secret
+//       const updatedUser =  User.findByIdAndUpdate(userId,{secret:submittedSecret});
+//       if (updatedUser) {
+//         // updatedUser.secret=submittedSecret;
+//         console.log(updatedUser);
+//         users.save(function(){
+//           res.redirect("/secrets");
+//         });
+//       } else {
+//         console.log("User not found");
+//         res.redirect("/login");
+//       }
+//     } catch (err) {
+//       console.error(err);
+//       res.redirect("/login");
+//     }
+//   } else {
+//     res.redirect("/login");
+//   }
+// });
+
+app.post("/submit", async function (req, res) {
+  const submittedSecret = req.body.secret;
+  
+  // Check if the user is authenticated
+  if (req.isAuthenticated()) {
+    const userId = req.user._id; // Use req.user._id to access the ObjectID
+
+    // Log the userId to the console to check if it's being retrieved correctly
+    // console.log("User ID:", user);
+
+    try {
+      // Find the user by their ID and await the result
+      const user =  User.findById(userId);
+      console.log(req.user._id);
+
+      if (user) {
+        // Update the secret field
+        user.secret = submittedSecret;
+
+        // Save the changes to the database
+        await user.save();
+
+        console.log("Secret saved:", user.secret);
+        res.redirect("/secrets");
+      } else {
+        console.log("User not found");
+        res.redirect("/login");
+      }
+    } catch (err) {
+      console.error(err);
+      res.redirect("/login");
+    }
+  } else {
+    res.redirect("/login");
+  }
+});
+
+
 
 app.post("/login", function (req, res) {
   const user = new User({
